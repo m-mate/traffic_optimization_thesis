@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Models & Results (large binary files)
+models/*.zip
+models/*.pkl
+results/*/
+!results/.gitkeep
+
+# SUMO generated files (keep source, ignore generated)
+*.net.xml
+*.rou.xml
+*.sumocfg
+*.trips.xml
+*.fcd.xml
+*.log
+
+# Keep the OSM source file
+!data/debrecen_slice.osm
+
+# TensorBoard logs
+runs/
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
