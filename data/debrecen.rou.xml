@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 
-<!-- generated on 2026-10-18 18:15:36.447138 by Eclipse SUMO randomTrips.py v1_28_0+0000-daf91b55789
+<!-- generated on 2026-10-18 18:28:11.330943 by Eclipse SUMO randomTrips.py v1_28_0+0000-daf91b55789
 <configuration>
     <net-file value="d:\Sumo-RL-vs-GA\traffic_optimization_thesis\data\debrecen.net.xml"/>
     <output-trip-file value="d:\Sumo-RL-vs-GA\traffic_optimization_thesis\data\debrecen.trips.xml"/>
@@ -12,7 +12,7 @@
 </configuration>
 -->
 
-<!-- generated on 2026-10-18T18:15:36.359830+01:00 by Eclipse SUMO duarouter 1.28.0
+<!-- generated on 2026-10-18T18:28:11.196836+01:00 by Eclipse SUMO duarouter 1.28.0
 <duarouterConfiguration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/duarouterConfiguration.xsd">
 
     <input>
