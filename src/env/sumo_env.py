@@ -127,12 +127,16 @@ class SumoEnv(gymnasium.Env):
         finally:
             self._close_sumo()
 
-        # ── Spaces (1.6.3 / 1.6.4 — stubs) ───────────────────────────
-        # Placeholder — will be replaced once 1.6.3 / 1.6.4 are built.
+        # ── Spaces (1.6.3 / 1.6.4) ────────────────────────────────────
+        total_lanes = sum(len(self.tls_lanes[t]) for t in self.tls_ids)
+        obs_dim = total_lanes * 4 + len(self.tls_ids) * 2
         self.observation_space = gymnasium.spaces.Box(
-            low=0, high=1, shape=(1,), dtype=np.float32,
+            low=0.0,
+            high=np.inf,
+            shape=(obs_dim,),
+            dtype=np.float32,
         )
-        self.action_space = gymnasium.spaces.MultiDiscrete([2])
+        self.action_space = gymnasium.spaces.MultiDiscrete([2])  # TODO: 1.6.4
 
         # ── Internal state reset every episode ────────────────────────
         self.previous_total_waiting: float = 0.0
@@ -281,9 +285,41 @@ class SumoEnv(gymnasium.Env):
     # ================================================================
 
     def _get_obs(self) -> np.ndarray:
-        """Gather the current observation vector."""
-        # TODO: implement in 1.6.3
-        return np.zeros(self.observation_space.shape, dtype=np.float32)
+        """Gather the current observation vector from SUMO.
+
+        The observation vector is a 1D float32 array concatenating:
+        - For each junction in ``tls_ids``:
+          - For each controlled incoming lane in ``tls_lanes[tls_id]``:
+            - Queue length (halting vehicles, speed < 0.1 m/s)
+            - Total vehicle count on the lane
+            - Average speed on the lane (m/s)
+            - Cumulative waiting time on the lane (s)
+          - Current phase index
+          - Elapsed time in the current phase (s)
+
+        Returns
+        -------
+        np.ndarray
+            Observation vector of shape ``(obs_dim,)``.
+        """
+        if not self._is_traci_connected:
+            return np.zeros(self.observation_space.shape, dtype=np.float32)
+
+        traci.switch(self._label)
+        obs: list[float] = []
+
+        for tls_id in self.tls_ids:
+            for lane_id in self.tls_lanes[tls_id]:
+                obs.append(float(traci.lane.getLastStepHaltingNumber(lane_id)))
+                obs.append(float(traci.lane.getLastStepVehicleNumber(lane_id)))
+                obs.append(float(traci.lane.getLastStepMeanSpeed(lane_id)))
+                obs.append(float(traci.lane.getWaitingTime(lane_id)))
+
+            obs.append(float(traci.trafficlight.getPhase(tls_id)))
+            spent = traci.trafficlight.getSpentDuration(tls_id)
+            obs.append(float(max(0.0, spent)))
+
+        return np.array(obs, dtype=np.float32)
 
     def _compute_reward(self) -> float:
         """Compute the reward for the current step."""
