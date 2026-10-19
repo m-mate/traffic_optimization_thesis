@@ -74,6 +74,11 @@ class SumoEnv(gymnasium.Env):
     reward_fn : str
         Name of the reward function variant.  Currently only
         ``"diff-waiting-time"`` is implemented.
+    min_green_phases : int
+        Minimum number of green phases required for a junction to be
+        considered controllable (default 2). Junctions with fewer green
+        phases have no phase-switching decisions and are excluded from
+        ``controlled_tls``.
     """
 
     metadata = {"render_modes": ["human"]}
@@ -88,6 +93,7 @@ class SumoEnv(gymnasium.Env):
         max_sim_time: int = 3600,
         use_gui: bool = False,
         reward_fn: str = "diff-waiting-time",
+        min_green_phases: int = 2,
     ):
         super().__init__()
 
@@ -100,6 +106,7 @@ class SumoEnv(gymnasium.Env):
         self.max_sim_time = max_sim_time
         self.use_gui = use_gui
         self.reward_fn = reward_fn
+        self.min_green_phases = min_green_phases
 
         # ── TraCI connection bookkeeping ──────────────────────────────
         # Each env instance gets a unique label so that multiple SumoEnv
@@ -108,24 +115,24 @@ class SumoEnv(gymnasium.Env):
         self._is_traci_connected = False
 
         # ── Bootstrap: start SUMO once to introspect the network ──────
-        self._start_sumo(seed=0)
-
-        # ── Network introspection (1.6.2 — filled in next step) ───────
-        self.tls_ids: list[str] = []          # all TLS in network
-        self.tls_phases: dict[str, int] = {}  # tls_id → # green phases
-        self.tls_lanes: dict[str, list[str]] = {}  # tls_id → incoming lanes
-        self.controlled_tls: list[str] = []   # junctions with ≥2 green phases
+        self.tls_ids: list[str] = []
+        self.tls_phases: dict[str, int] = {}
+        self.tls_lanes: dict[str, list[str]] = {}
+        self.controlled_tls: list[str] = []
         self.green_phase_indices: dict[str, list[int]] = {}
-        # TODO: populate in 1.6.2
+
+        self._start_sumo(seed=0)
+        try:
+            self._introspect_network()
+        finally:
+            self._close_sumo()
 
         # ── Spaces (1.6.3 / 1.6.4 — stubs) ───────────────────────────
-        # Placeholder — will be replaced once introspection populates
-        # the lane / phase counts.
+        # Placeholder — will be replaced once 1.6.3 / 1.6.4 are built.
         self.observation_space = gymnasium.spaces.Box(
             low=0, high=1, shape=(1,), dtype=np.float32,
         )
         self.action_space = gymnasium.spaces.MultiDiscrete([2])
-        # TODO: replace in 1.6.3 / 1.6.4
 
         # ── Internal state reset every episode ────────────────────────
         self.previous_total_waiting: float = 0.0
@@ -133,8 +140,55 @@ class SumoEnv(gymnasium.Env):
         self.current_phase_time: dict[str, int] = {}
         self.sim_seed: int = 0
 
-        # ── Shut down the bootstrap simulation ────────────────────────
-        self._close_sumo()
+    # ================================================================
+    #  Network introspection  (1.6.2)
+    # ================================================================
+
+    def _introspect_network(self) -> None:
+        """Introspect TLS programs and controlled lanes from the running SUMO simulation."""
+        traci.switch(self._label)
+        available_tls = set(traci.trafficlight.getIDList())
+
+        if self._requested_tls_ids is None:
+            self.tls_ids = sorted(available_tls)
+        else:
+            missing = [t for t in self._requested_tls_ids if t not in available_tls]
+            if missing:
+                raise ValueError(
+                    f"Requested TLS ID(s) {missing} not found in SUMO network. "
+                    f"Available TLS IDs: {sorted(available_tls)}"
+                )
+            self.tls_ids = list(self._requested_tls_ids)
+
+        self.tls_phases = {}
+        self.green_phase_indices = {}
+        self.tls_lanes = {}
+
+        for tls_id in self.tls_ids:
+            logics = traci.trafficlight.getAllProgramLogics(tls_id)
+            if not logics:
+                raise ValueError(f"No traffic light logic found for TLS ID '{tls_id}'.")
+            logic = logics[0]
+
+            # Pure green phases: contains green ('G' or 'g') and no yellow transition ('y' or 'Y')
+            green_indices = [
+                i
+                for i, p in enumerate(logic.phases)
+                if ("G" in p.state or "g" in p.state)
+                and "y" not in p.state
+                and "Y" not in p.state
+            ]
+            self.green_phase_indices[tls_id] = green_indices
+            self.tls_phases[tls_id] = len(green_indices)
+            self.tls_lanes[tls_id] = sorted(
+                set(traci.trafficlight.getControlledLanes(tls_id))
+            )
+
+        self.controlled_tls = [
+            tls_id
+            for tls_id in self.tls_ids
+            if self.tls_phases[tls_id] >= self.min_green_phases
+        ]
 
     # ================================================================
     #  TraCI lifecycle  (1.6.1)
