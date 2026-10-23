@@ -136,7 +136,16 @@ class SumoEnv(gymnasium.Env):
             shape=(obs_dim,),
             dtype=np.float32,
         )
-        self.action_space = gymnasium.spaces.MultiDiscrete([2])  # TODO: 1.6.4
+
+        if not self.controlled_tls:
+            raise ValueError(
+                f"No controllable traffic lights found among {self.tls_ids}. "
+                f"All junctions have fewer than min_green_phases={self.min_green_phases} green phases."
+            )
+
+        self.action_space = gymnasium.spaces.MultiDiscrete(
+            [self.tls_phases[tls_id] for tls_id in self.controlled_tls]
+        )
 
         # ── Internal state reset every episode ────────────────────────
         self.previous_total_waiting: float = 0.0
@@ -265,6 +274,50 @@ class SumoEnv(gymnasium.Env):
         obs = self._get_obs()
         info = self._get_info()
         return obs, info
+
+    # ================================================================
+    #  Action mapping  (1.6.4)
+    # ================================================================
+
+    def action_to_sumo_phases(
+        self, action: np.ndarray | list[int] | tuple[int, ...]
+    ) -> dict[str, int]:
+        """Map discrete green-phase action indices to actual SUMO phase indices.
+
+        Parameters
+        ----------
+        action : np.ndarray | list[int] | tuple[int, ...]
+            Discrete action vector where ``action[i]`` selects the green phase
+            index for ``controlled_tls[i]``.
+
+        Returns
+        -------
+        dict[str, int]
+            Mapping of ``tls_id -> sumo_phase_index``.
+
+        Raises
+        ------
+        ValueError
+            If action length or values are invalid.
+        """
+        if len(action) != len(self.controlled_tls):
+            raise ValueError(
+                f"Action length {len(action)} does not match number of "
+                f"controlled TLS {len(self.controlled_tls)} ({self.controlled_tls})."
+            )
+
+        sumo_phases = {}
+        for i, tls_id in enumerate(self.controlled_tls):
+            act = int(action[i])
+            num_phases = self.tls_phases[tls_id]
+            if act < 0 or act >= num_phases:
+                raise ValueError(
+                    f"Action index {act} out of bounds for TLS '{tls_id}' "
+                    f"which has {num_phases} green phases (valid: 0 to {num_phases - 1})."
+                )
+            sumo_phases[tls_id] = self.green_phase_indices[tls_id][act]
+
+        return sumo_phases
 
     def step(self, action):
         """Execute one agent decision and advance the simulation."""
