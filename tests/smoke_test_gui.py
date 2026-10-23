@@ -18,6 +18,29 @@ from src.env.sumo_env import SumoEnv
 SUMOCFG = os.path.join(os.path.dirname(__file__), "..", "data", "debrecen.sumocfg")
 
 
+def _bring_sumo_to_front():
+    """Bring the SUMO-GUI window to the foreground on Windows."""
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+
+        def enum_windows(hwnd, _):
+            length = user32.GetWindowTextLengthW(hwnd)
+            if length > 0:
+                buff = ctypes.create_unicode_buffer(length + 1)
+                user32.GetWindowTextW(hwnd, buff, length + 1)
+                if "sumo" in buff.value.lower():
+                    user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                    user32.SetForegroundWindow(hwnd)
+                    user32.BringWindowToTop(hwnd)
+            return True
+
+        WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+        user32.EnumWindows(WNDENUMPROC(enum_windows), 0)
+    except Exception:
+        pass
+
+
 def run_gui_smoke_test(steps: int = 50, delay: float = 0.05, seed: int = 42):
     """Run an interactive visual rollout in SUMO-GUI.
 
@@ -46,6 +69,7 @@ def run_gui_smoke_test(steps: int = 50, delay: float = 0.05, seed: int = 42):
 
     try:
         obs, info = env.reset(seed=seed)
+        _bring_sumo_to_front()
         print(f"[OK] Simulation launched in sumo-gui! Initial sim_time: {info['sim_time']}")
         print(f"Controlled TLS junctions: {env.controlled_tls}")
         print(f"Action space: {env.action_space}")
