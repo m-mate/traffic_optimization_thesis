@@ -76,6 +76,10 @@ def run_gui_smoke_test(steps: int = 50, delay: float = 0.05, seed: int = 42):
 
         print("-" * 70)
         print(f"[PASS] GUI smoke test completed successfully ({step_idx} steps, final sim_time: {info['sim_time']}s).")
+        try:
+            input("\n[INFO] Simulation finished! Press Enter in this console to close the sumo-gui window... ")
+        except (EOFError, KeyboardInterrupt):
+            pass
     finally:
         env.close()
         print("[OK] sumo-gui closed cleanly.")
