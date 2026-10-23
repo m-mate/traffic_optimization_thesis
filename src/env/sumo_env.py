@@ -99,6 +99,9 @@ class SumoEnv(gymnasium.Env):
 
         # ── Store config ──────────────────────────────────────────────
         self.sumocfg_path = os.path.abspath(sumocfg_path)
+        if not os.path.isfile(self.sumocfg_path):
+            raise FileNotFoundError(f"SUMO config file not found at '{self.sumocfg_path}'.")
+
         self._requested_tls_ids = tls_ids  # may be None → auto-discover
         self.delta_time = delta_time
         self.yellow_time = yellow_time
@@ -108,9 +111,19 @@ class SumoEnv(gymnasium.Env):
         self.reward_fn = reward_fn
         self.min_green_phases = min_green_phases
 
-        if self.yellow_time > self.delta_time:
+        if self.delta_time <= 0:
+            raise ValueError(f"delta_time must be positive, got {self.delta_time}.")
+        if self.yellow_time < 0 or self.yellow_time > self.delta_time:
             raise ValueError(
-                f"yellow_time ({self.yellow_time}) cannot be greater than delta_time ({self.delta_time})."
+                f"yellow_time ({self.yellow_time}) cannot be greater than delta_time ({self.delta_time}) or negative."
+            )
+        if self.min_green < 0:
+            raise ValueError(f"min_green cannot be negative, got {self.min_green}.")
+        if self.max_sim_time <= 0:
+            raise ValueError(f"max_sim_time must be positive, got {self.max_sim_time}.")
+        if self.reward_fn != "diff-waiting-time":
+            raise ValueError(
+                f"Unknown reward_fn '{self.reward_fn}'. Currently only 'diff-waiting-time' is supported."
             )
 
         # ── TraCI connection bookkeeping ──────────────────────────────
