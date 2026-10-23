@@ -108,6 +108,11 @@ class SumoEnv(gymnasium.Env):
         self.reward_fn = reward_fn
         self.min_green_phases = min_green_phases
 
+        if self.yellow_time > self.delta_time:
+            raise ValueError(
+                f"yellow_time ({self.yellow_time}) cannot be greater than delta_time ({self.delta_time})."
+            )
+
         # ── TraCI connection bookkeeping ──────────────────────────────
         # Each env instance gets a unique label so that multiple SumoEnv
         # objects can coexist (traci uses the label to namespace calls).
@@ -120,6 +125,8 @@ class SumoEnv(gymnasium.Env):
         self.tls_lanes: dict[str, list[str]] = {}
         self.controlled_tls: list[str] = []
         self.green_phase_indices: dict[str, list[int]] = {}
+        self.yellow_phase_indices: dict[str, dict[int, int]] = {}
+        self.default_programs: dict[str, str] = {}
 
         self._start_sumo(seed=0)
         try:
@@ -149,8 +156,9 @@ class SumoEnv(gymnasium.Env):
 
         # ── Internal state reset every episode ────────────────────────
         self.previous_total_waiting: float = 0.0
-        self.phase_is_yellow: dict[str, bool] = {}
+        self.current_phase: dict[str, int] = {}
         self.current_phase_time: dict[str, int] = {}
+        self.phase_is_yellow: dict[str, bool] = {}
         self.sim_seed: int = 0
 
     # ================================================================
@@ -175,6 +183,8 @@ class SumoEnv(gymnasium.Env):
 
         self.tls_phases = {}
         self.green_phase_indices = {}
+        self.yellow_phase_indices = {}
+        self.default_programs = {}
         self.tls_lanes = {}
 
         for tls_id in self.tls_ids:
@@ -182,6 +192,7 @@ class SumoEnv(gymnasium.Env):
             if not logics:
                 raise ValueError(f"No traffic light logic found for TLS ID '{tls_id}'.")
             logic = logics[0]
+            self.default_programs[tls_id] = logic.programID
 
             # Pure green phases: contains green ('G' or 'g') and no yellow transition ('y' or 'Y')
             green_indices = [
@@ -196,6 +207,15 @@ class SumoEnv(gymnasium.Env):
             self.tls_lanes[tls_id] = sorted(
                 set(traci.trafficlight.getControlledLanes(tls_id))
             )
+
+            # Map each green phase to its transition yellow phase if defined in program
+            yellow_map = {}
+            for g_idx in green_indices:
+                next_idx = (g_idx + 1) % len(logic.phases)
+                next_phase = logic.phases[next_idx]
+                if "y" in next_phase.state or "Y" in next_phase.state:
+                    yellow_map[g_idx] = next_idx
+            self.yellow_phase_indices[tls_id] = yellow_map
 
         self.controlled_tls = [
             tls_id
@@ -265,15 +285,46 @@ class SumoEnv(gymnasium.Env):
 
         # (Re-)start SUMO
         self._start_sumo(seed=self.sim_seed)
+        traci.switch(self._label)
 
-        # Reset bookkeeping
+        # Reset bookkeeping and initialize controlled junctions in their first green phase
+        self.current_phase = {}
+        self.current_phase_time = {}
+        self.phase_is_yellow = {}
+        for tls_id in self.controlled_tls:
+            initial_green = self.green_phase_indices[tls_id][0]
+            self._set_green_phase(tls_id, initial_green)
+            self.current_phase[tls_id] = initial_green
+            self.current_phase_time[tls_id] = 0
+            self.phase_is_yellow[tls_id] = False
+
         self.previous_total_waiting = 0.0
-        self.phase_is_yellow = {tls: False for tls in self.controlled_tls}
-        self.current_phase_time = {tls: 0 for tls in self.controlled_tls}
 
         obs = self._get_obs()
         info = self._get_info()
         return obs, info
+
+    # ================================================================
+    #  Signal control helpers
+    # ================================================================
+
+    def _set_yellow_phase(self, tls_id: str, current_phase_idx: int) -> None:
+        """Transition a traffic light from green to yellow."""
+        yellow_idx = self.yellow_phase_indices.get(tls_id, {}).get(current_phase_idx)
+        if yellow_idx is not None:
+            if traci.trafficlight.getProgram(tls_id) != self.default_programs[tls_id]:
+                traci.trafficlight.setProgram(tls_id, self.default_programs[tls_id])
+            traci.trafficlight.setPhase(tls_id, yellow_idx)
+        else:
+            current_state = traci.trafficlight.getRedYellowGreenState(tls_id)
+            yellow_state = current_state.replace("G", "y").replace("g", "y")
+            traci.trafficlight.setRedYellowGreenState(tls_id, yellow_state)
+
+    def _set_green_phase(self, tls_id: str, target_phase_idx: int) -> None:
+        """Set the traffic light to the target green phase."""
+        if traci.trafficlight.getProgram(tls_id) != self.default_programs[tls_id]:
+            traci.trafficlight.setProgram(tls_id, self.default_programs[tls_id])
+        traci.trafficlight.setPhase(tls_id, target_phase_idx)
 
     # ================================================================
     #  Action mapping  (1.6.4)
@@ -319,14 +370,85 @@ class SumoEnv(gymnasium.Env):
 
         return sumo_phases
 
-    def step(self, action):
-        """Execute one agent decision and advance the simulation."""
-        # TODO: implement in 1.6.5
+    def step(self, action: np.ndarray | list[int] | tuple[int, ...]):
+        """Execute one agent decision and advance the simulation by delta_time.
+
+        Parameters
+        ----------
+        action : np.ndarray | list[int] | tuple[int, ...]
+            Discrete action vector where ``action[i]`` selects the green phase
+            for ``controlled_tls[i]``.
+
+        Returns
+        -------
+        tuple
+            (obs, reward, terminated, truncated, info)
+        """
+        if not self._is_traci_connected:
+            raise RuntimeError("Simulation is not running. Call reset() before step().")
+
+        traci.switch(self._label)
+
+        # 1. Decode desired green phase for each controlled TLS
+        desired_phases = self.action_to_sumo_phases(action)
+
+        # 2. Check which junctions need and are allowed to switch
+        to_switch = {}
+        for tls_id in self.controlled_tls:
+            desired = desired_phases[tls_id]
+            current = self.current_phase.get(tls_id, traci.trafficlight.getPhase(tls_id))
+            if desired != current:
+                # Minimum green time constraint: ignore switch if elapsed time < min_green
+                if self.current_phase_time.get(tls_id, 0) >= self.min_green:
+                    to_switch[tls_id] = desired
+
+        # 3. Advance simulation
+        if to_switch:
+            # Transition switching junctions to yellow
+            for tls_id in to_switch:
+                self._set_yellow_phase(tls_id, self.current_phase[tls_id])
+                self.phase_is_yellow[tls_id] = True
+
+            # Run yellow phase duration
+            for _ in range(self.yellow_time):
+                traci.simulationStep()
+
+            # Non-switching junctions accrued yellow_time in their green phase
+            for tls_id in self.controlled_tls:
+                if tls_id not in to_switch:
+                    self.current_phase_time[tls_id] += self.yellow_time
+
+            # Switch junctions to the target green phase
+            for tls_id, desired in to_switch.items():
+                self._set_green_phase(tls_id, desired)
+                self.current_phase[tls_id] = desired
+                self.current_phase_time[tls_id] = 0
+                self.phase_is_yellow[tls_id] = False
+
+            # Run remaining green time
+            remaining_time = self.delta_time - self.yellow_time
+            for _ in range(remaining_time):
+                traci.simulationStep()
+
+            # Accrue remaining green time
+            for tls_id in self.controlled_tls:
+                self.current_phase_time[tls_id] += remaining_time
+        else:
+            # No junctions switched; advance full delta_time
+            for _ in range(self.delta_time):
+                traci.simulationStep()
+
+            for tls_id in self.controlled_tls:
+                self.current_phase_time[tls_id] += self.delta_time
+
+        # 4. Gather results
         obs = self._get_obs()
-        reward = 0.0
-        terminated = traci.simulation.getTime() >= self.max_sim_time
+        reward = self._compute_reward()
+        sim_time = traci.simulation.getTime()
+        terminated = bool(sim_time >= self.max_sim_time)
         truncated = False
         info = self._get_info()
+
         return obs, reward, terminated, truncated, info
 
     def close(self):
@@ -375,11 +497,38 @@ class SumoEnv(gymnasium.Env):
         return np.array(obs, dtype=np.float32)
 
     def _compute_reward(self) -> float:
-        """Compute the reward for the current step."""
-        # TODO: implement in 1.6.6
-        return 0.0
+        """Compute the reward for the current step.
+
+        Uses the negative change in total waiting time across all controlled lanes:
+        ``reward = previous_waiting - current_waiting``.
+        """
+        if not self._is_traci_connected:
+            return 0.0
+
+        current_total_waiting = 0.0
+        for tls_id in self.tls_ids:
+            for lane_id in self.tls_lanes[tls_id]:
+                current_total_waiting += float(traci.lane.getWaitingTime(lane_id))
+
+        reward = self.previous_total_waiting - current_total_waiting
+        self.previous_total_waiting = current_total_waiting
+        return float(reward)
 
     def _get_info(self) -> dict:
         """Return auxiliary per-step metrics."""
-        # TODO: implement properly; basic stub for now
-        return {"sim_time": traci.simulation.getTime()}
+        if not self._is_traci_connected:
+            return {"sim_time": 0.0}
+
+        traci.switch(self._label)
+        total_halting = sum(
+            traci.lane.getLastStepHaltingNumber(lane)
+            for tls_id in self.tls_ids
+            for lane in self.tls_lanes[tls_id]
+        )
+        return {
+            "sim_time": float(traci.simulation.getTime()),
+            "total_waiting_time": float(self.previous_total_waiting),
+            "total_halting": int(total_halting),
+            "throughput": int(traci.simulation.getArrivedNumber()),
+            "departed": int(traci.simulation.getDepartedNumber()),
+        }
