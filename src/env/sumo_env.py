@@ -499,19 +499,20 @@ class SumoEnv(gymnasium.Env):
     def _compute_reward(self) -> float:
         """Compute the reward for the current step.
 
-        Uses the negative change in total waiting time across all controlled lanes:
+        Uses the negative change in total waiting time across controlled lanes:
         ``reward = previous_waiting - current_waiting``.
         """
         if not self._is_traci_connected:
             return 0.0
 
-        current_total_waiting = 0.0
-        for tls_id in self.tls_ids:
-            for lane_id in self.tls_lanes[tls_id]:
-                current_total_waiting += float(traci.lane.getWaitingTime(lane_id))
-
-        reward = self.previous_total_waiting - current_total_waiting
-        self.previous_total_waiting = current_total_waiting
+        traci.switch(self._label)
+        current_waiting = sum(
+            float(traci.lane.getWaitingTime(lane))
+            for tls_id in self.tls_ids
+            for lane in self.tls_lanes[tls_id]
+        )
+        reward = self.previous_total_waiting - current_waiting
+        self.previous_total_waiting = current_waiting
         return float(reward)
 
     def _get_info(self) -> dict:
