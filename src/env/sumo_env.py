@@ -257,7 +257,7 @@ class SumoEnv(gymnasium.Env):
 
     def _close_sumo(self) -> None:
         """Shut down the current TraCI connection (idempotent)."""
-        if not self._is_traci_connected:
+        if not getattr(self, "_is_traci_connected", False):
             return
         try:
             traci.switch(self._label)
@@ -454,6 +454,13 @@ class SumoEnv(gymnasium.Env):
     def close(self):
         """Clean up the SUMO process."""
         self._close_sumo()
+
+    def __del__(self):
+        """Ensure SUMO process is terminated on garbage collection."""
+        try:
+            self.close()
+        except Exception:
+            pass
 
     # ================================================================
     #  Helpers  (stubs — filled in 1.6.3 / 1.6.6)
