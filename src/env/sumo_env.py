@@ -141,7 +141,7 @@ class SumoEnv(gymnasium.Env):
         self.yellow_phase_indices: dict[str, dict[int, int]] = {}
         self.default_programs: dict[str, str] = {}
 
-        self._start_sumo(seed=0)
+        self._start_sumo(seed=0, force_headless=True)
         try:
             self._introspect_network()
         finally:
@@ -240,19 +240,22 @@ class SumoEnv(gymnasium.Env):
     #  TraCI lifecycle  (1.6.1)
     # ================================================================
 
-    def _start_sumo(self, seed: int = 0) -> None:
+    def _start_sumo(self, seed: int = 0, force_headless: bool = False) -> None:
         """Start a new SUMO simulation instance via TraCI.
 
         Parameters
         ----------
         seed : int
             Random seed forwarded to SUMO (``--seed``).
+        force_headless : bool
+            If True, ignore ``use_gui`` and launch headless ``sumo``.
         """
         if self._is_traci_connected:
             self._close_sumo()
 
+        use_gui = self.use_gui and not force_headless
         sumo_binary = sumolib.checkBinary(
-            "sumo-gui" if self.use_gui else "sumo"
+            "sumo-gui" if use_gui else "sumo"
         )
 
         cmd = [
@@ -263,6 +266,8 @@ class SumoEnv(gymnasium.Env):
             "--no-warnings", "true",
             "--no-step-log", "true",
         ]
+        if use_gui:
+            cmd.extend(["--start", "--quit-on-end"])
 
         port = getFreeSocketPort()
         traci.start(cmd, port=port, label=self._label)
