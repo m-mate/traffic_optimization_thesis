@@ -117,15 +117,36 @@ def run_sweep(configs: list[dict] | None = None, timesteps_per_config: int = 10_
     return results
 
 
+def train_final(total_timesteps: int = 100_000, **custom_kwargs):
+    """Train the final PPO model with tuned hyperparameters and save to ppo_final.zip."""
+    kwargs = {
+        "learning_rate": 3e-4,
+        "n_steps": 512,
+        "batch_size": 64,
+        "gamma": 0.99,
+        "ent_coef": 0.01,
+        "reward_fn": "diff-waiting-time-shaped",
+        "switch_penalty": 2.0,
+        "throughput_coef": 5.0,
+        "tb_log_name": "PPO_final",
+        "model_name": "ppo_final",
+    }
+    kwargs.update(custom_kwargs)
+    return train(total_timesteps=total_timesteps, **kwargs)
+
+
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Train PPO traffic agent or run hyperparameter sweep.")
     parser.add_argument("--sweep", action="store_true", help="Run hyperparameter sweep")
+    parser.add_argument("--final", action="store_true", help="Train final PPO model with tuned hyperparameters")
     parser.add_argument("--timesteps", type=int, default=100_000, help="Total timesteps to train")
     args = parser.parse_args()
 
     if args.sweep:
         run_sweep(timesteps_per_config=args.timesteps if args.timesteps != 100_000 else 10_000)
+    elif args.final:
+        train_final(total_timesteps=args.timesteps)
     else:
         train(total_timesteps=args.timesteps)
