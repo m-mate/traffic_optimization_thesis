@@ -72,8 +72,14 @@ class SumoEnv(gymnasium.Env):
     use_gui : bool
         If *True*, launch ``sumo-gui`` instead of headless ``sumo``.
     reward_fn : str
-        Name of the reward function variant.  Currently only
-        ``"diff-waiting-time"`` is implemented.
+        Name of the reward function variant: ``"diff-waiting-time"`` or
+        ``"diff-waiting-time-shaped"``.
+    switch_penalty : float
+        Penalty applied per junction phase switch when using shaped reward
+        (anti-flickering). Default 0.0.
+    throughput_coef : float
+        Bonus coefficient per arrived vehicle when using shaped reward.
+        Default 0.0.
     min_green_phases : int
         Minimum number of green phases required for a junction to be
         considered controllable (default 2). Junctions with fewer green
@@ -93,6 +99,8 @@ class SumoEnv(gymnasium.Env):
         max_sim_time: int = 3600,
         use_gui: bool = False,
         reward_fn: str = "diff-waiting-time",
+        switch_penalty: float = 0.0,
+        throughput_coef: float = 0.0,
         min_green_phases: int = 2,
     ):
         super().__init__()
@@ -109,6 +117,8 @@ class SumoEnv(gymnasium.Env):
         self.max_sim_time = max_sim_time
         self.use_gui = use_gui
         self.reward_fn = reward_fn
+        self.switch_penalty = float(switch_penalty)
+        self.throughput_coef = float(throughput_coef)
         self.min_green_phases = min_green_phases
 
         if self.delta_time <= 0:
@@ -121,9 +131,10 @@ class SumoEnv(gymnasium.Env):
             raise ValueError(f"min_green cannot be negative, got {self.min_green}.")
         if self.max_sim_time <= 0:
             raise ValueError(f"max_sim_time must be positive, got {self.max_sim_time}.")
-        if self.reward_fn != "diff-waiting-time":
+        if self.reward_fn not in ("diff-waiting-time", "diff-waiting-time-shaped"):
             raise ValueError(
-                f"Unknown reward_fn '{self.reward_fn}'. Currently only 'diff-waiting-time' is supported."
+                f"Unknown reward_fn '{self.reward_fn}'. Valid options: "
+                f"'diff-waiting-time', 'diff-waiting-time-shaped'."
             )
 
         # ── TraCI connection bookkeeping ──────────────────────────────
@@ -173,6 +184,7 @@ class SumoEnv(gymnasium.Env):
         self.current_phase_time: dict[str, int] = {}
         self.phase_is_yellow: dict[str, bool] = {}
         self.sim_seed: int = 0
+        self._switches_last_step: int = 0
 
     # ================================================================
     #  Network introspection  (1.6.2)
@@ -317,6 +329,7 @@ class SumoEnv(gymnasium.Env):
             self.phase_is_yellow[tls_id] = False
 
         self.previous_total_waiting = 0.0
+        self._switches_last_step = 0
 
         obs = self._get_obs()
         info = self._get_info()
@@ -421,6 +434,7 @@ class SumoEnv(gymnasium.Env):
                     to_switch[tls_id] = desired
 
         # 3. Advance simulation
+        self._switches_last_step = len(to_switch)
         if to_switch:
             # Transition switching junctions to yellow
             for tls_id in to_switch:
@@ -537,6 +551,9 @@ class SumoEnv(gymnasium.Env):
             for lane in self.tls_lanes[tls_id]
         )
         reward = self.previous_total_waiting - current_waiting
+        if self.reward_fn == "diff-waiting-time-shaped":
+            reward -= self.switch_penalty * self._switches_last_step
+            reward += self.throughput_coef * float(traci.simulation.getArrivedNumber())
         self.previous_total_waiting = current_waiting
         return float(reward)
 
@@ -557,4 +574,5 @@ class SumoEnv(gymnasium.Env):
             "total_halting": int(total_halting),
             "throughput": int(traci.simulation.getArrivedNumber()),
             "departed": int(traci.simulation.getDepartedNumber()),
+            "switches": int(self._switches_last_step),
         }
