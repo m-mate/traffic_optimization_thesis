@@ -67,5 +67,65 @@ def train(
     return model
 
 
+SWEEP_CONFIGS = [
+    {
+        "name": "baseline_lr3e-4_n512",
+        "learning_rate": 3e-4,
+        "n_steps": 512,
+        "batch_size": 64,
+        "gamma": 0.99,
+        "ent_coef": 0.01,
+        "policy_kwargs": dict(net_arch=[64, 64]),
+    },
+    {
+        "name": "deep_lr1e-4_n1024",
+        "learning_rate": 1e-4,
+        "n_steps": 1024,
+        "batch_size": 128,
+        "gamma": 0.99,
+        "ent_coef": 0.0,
+        "policy_kwargs": dict(net_arch=[128, 128]),
+    },
+    {
+        "name": "fast_lr5e-4_n256",
+        "learning_rate": 5e-4,
+        "n_steps": 256,
+        "batch_size": 64,
+        "gamma": 0.95,
+        "ent_coef": 0.01,
+        "policy_kwargs": dict(net_arch=[64, 64]),
+    },
+]
+
+
+def run_sweep(configs: list[dict] | None = None, timesteps_per_config: int = 10_000):
+    """Run a hyperparameter sweep over candidate configurations."""
+    configs = configs or SWEEP_CONFIGS
+    results = []
+    for cfg in configs:
+        cfg = dict(cfg)
+        name = cfg.pop("name")
+        print(f"\n=== Starting Sweep Run: {name} ===")
+        model = train(
+            total_timesteps=timesteps_per_config,
+            tb_log_name=f"sweep_{name}",
+            model_name=f"ppo_sweep_{name}",
+            **cfg,
+        )
+        results.append(name)
+    print(f"\nSweep completed for: {results}")
+    return results
+
+
 if __name__ == "__main__":
-    train()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Train PPO traffic agent or run hyperparameter sweep.")
+    parser.add_argument("--sweep", action="store_true", help="Run hyperparameter sweep")
+    parser.add_argument("--timesteps", type=int, default=100_000, help="Total timesteps to train")
+    args = parser.parse_args()
+
+    if args.sweep:
+        run_sweep(timesteps_per_config=args.timesteps if args.timesteps != 100_000 else 10_000)
+    else:
+        train(total_timesteps=args.timesteps)
