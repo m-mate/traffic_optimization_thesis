@@ -6,3 +6,4 @@ sumolib>=1.28.0
 libsumo>=1.28.0
 tensorboard>=2.21.0
 numpy>=2.0.0
+deap>=1.4.1
