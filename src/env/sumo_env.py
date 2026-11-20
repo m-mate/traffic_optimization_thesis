@@ -313,8 +313,22 @@ class SumoEnv(gymnasium.Env):
         else:
             self.sim_seed = int(self.np_random.integers(0, 2**31))
 
-        # (Re-)start SUMO
-        self._start_sumo(seed=self.sim_seed)
+        # (Re-)start or reload SUMO
+        if self._is_traci_connected:
+            try:
+                traci.switch(self._label)
+                cmd = [
+                    "-c", self.sumocfg_path,
+                    "--seed", str(self.sim_seed),
+                    "--random", "false",
+                    "--no-warnings", "true",
+                    "--no-step-log", "true",
+                ]
+                traci.load(cmd)
+            except Exception:
+                self._start_sumo(seed=self.sim_seed)
+        else:
+            self._start_sumo(seed=self.sim_seed)
         traci.switch(self._label)
 
         # Reset bookkeeping and initialize controlled junctions in their first green phase
